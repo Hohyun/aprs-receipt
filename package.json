@@ -1,0 +1,17 @@
+{
+  "name": "aprs-receipt",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.47.2",
+    "@types/combinations": "^1.0.2",
+    "@types/node": "^22.7.5"
+  },
+  "scripts": {},
+  "dependencies": {
+    "combinations": "^1.0.0",
+    "date-fns": "^4.1.0",
+    "pg": "^8.13.0"
+  }
+}
