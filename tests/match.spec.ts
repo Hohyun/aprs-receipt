@@ -33,8 +33,8 @@ test('SP test', async () => {
     // const results = await receiptInfo('SW_LJ_OFF_20230825');
     // const results = await receiptInfo('NK_SP_20230820');
     // const pid = 'SW_LJ_OFF_20230825';
-    // const pid = 'HD_BSP_20240801';
-    const pid = 'NK_SP_20240804';
+    const pid = 'HD_BSP_20240903';
+    // const pid = 'NK_SP_20240804';
 
     const checkings = await getPayInfo(pid);
     checkings.forEach((checking, i) => {

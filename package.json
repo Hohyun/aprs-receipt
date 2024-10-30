@@ -12,6 +12,8 @@
   "dependencies": {
     "combinations": "^1.0.0",
     "date-fns": "^4.1.0",
+    "date-holidays": "^3.23.12",
+    "dotenv": "^16.4.5",
     "pg": "^8.13.0"
   }
 }

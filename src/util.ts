@@ -201,9 +201,9 @@ export async function invInfo(payments: Payment[]): Promise<ErpInv[]>{
             where reference in (
                 select distinct substr(reference, 1, 12) as reference
                 from ledger
-                where paymentid = $1 and date = $2 and description like '%${p.paymentid}%' and account = 'assets:ar:ccar'
+                where paymentid = $1 and description like '%${p.paymentid}%' and account = 'assets:ar:ccar'
             )`,
-            values: [p.paymentid, p.date ]
+            values: [p.paymentid]
         }
     } else if (p.gateway === 'SP') {
         const pids = payments.map((payment) => payment['paymentid'])
@@ -213,8 +213,8 @@ export async function invInfo(payments: Payment[]): Promise<ErpInv[]>{
           select acctdate, customer, ccy, salerfnd, reference, amount, krwamt
           from erp_inv
           where acctdate in (${datesClause}) 
-            and substr(reference, 1, 2) = substr($1, 1, 2)`,
-          values: [pids[0]]
+            and substr(reference, 1, 2) = $1`,
+          values: [p.settleco]
         }
     } else if (p.gateway === 'JINAIR') {
         // on, off invoices are megred in case of LJ
@@ -232,10 +232,14 @@ export async function invInfo(payments: Payment[]): Promise<ErpInv[]>{
     } 
     
     try {
-      const result = await pool.query(query);
-      var infos = result.rows;
-      infos.forEach((info) => {info.acctdate = format(info.acctdate, 'yyyy-MM-dd')})
-      return infos;
+        const result = await pool.query(query);
+        var infos = result.rows;
+        infos.forEach((info) => {
+            info.acctdate = format(info.acctdate, 'yyyy-MM-dd')
+            info.amount = parseFloat(info.amount)
+            info.krwamt = parseFloat(info.krwamt)
+        })
+        return infos;
     } catch (e) {
       console.error(e.stack);
     } 
@@ -286,4 +290,33 @@ export async function receiptInfo(paymentId: string): Promise<ReceiptInfo[]>{
         })
     }
     return receipts;
+}
+
+export function receiptMethod(p: Payment): string {
+    var method = ''
+    if (p.gateway === 'JINAIR') {
+        method = 'KEB HANA BANK_KRW_R_5031'
+    } else if (p.gateway === 'SP') {
+        method = 'KEB HANA BANK_KRW_R_5009'
+    } else if (p.gateway === 'BSP') {
+        method = 'KEB HANA BANK_KRW_R_9038'
+    } 
+    return method
+}
+
+export function getWriteOffAccount(info: Accounting): string {
+    var writeOff = ''
+    if (info.account == 'expenses:ccfee') {
+        const gateway = info.paymentid.split('_')[1]
+        if (gateway === 'SP') {
+            writeOff = '간편결제수수료' 
+        } else {
+            writeOff = 'Credit Card Fee'
+        }
+    } else if (info.account == 'expenses:salesdisc') {
+        writeOff = '매출할인'
+    } else if (info.account == 'clearing:ar_payment') {
+        writeOff = 'AR Payment_Clearing'
+    } 
+    return writeOff
 }
