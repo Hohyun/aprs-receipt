@@ -31,12 +31,25 @@ export default defineConfig({
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: 'on-first-retry',
   },
+  /* test timeout : 10 min -- default 30 sec */
+  timeout: 60_000 * 10,
+  /* expect timeout : 30 sec -- default 5 sec*/
+  expect: {
+    timeout: 30_000,
+  },
 
   /* Configure projects for major browsers */
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: { 
+        ...devices['Desktop Chrome'],
+        deviceScaleFactor: undefined,
+        viewport: null,
+        launchOptions: {
+          args: ['--start-maximized']
+        },
+      }
     },
 
     {

@@ -36,9 +36,17 @@ export interface ErpInv {
     salerfnd: string,
     reference: string,
     amount: number,
-    krwamt: number
+    krwamt?: number
 }
   
+export interface InvInfo {
+    acctdate: string;
+    customer: string;
+    ccy: string;
+    reference: string;
+    amounts: number[];
+}
+
 export interface Accounting {
     paymentid: string,
     date: string,
@@ -50,7 +58,7 @@ export interface Accounting {
 export interface ReceiptInfo {
     payments: Payment[],
     bankstmts: Bankstmt[],
-    erp_invs: ErpInv[],
+    erp_invs: InvInfo[],
     accounting: Accounting[]
 }
   
@@ -189,7 +197,7 @@ export async function matchedPayAndBankInfo(p: Payment): Promise<MatchedPayAndBa
     }
 }
 
-export async function invInfo(payments: Payment[]): Promise<ErpInv[]>{
+export async function invInfo(payments: Payment[]): Promise<InvInfo[]>{
     
     var query = {}
     const p = payments[0]  
@@ -239,7 +247,7 @@ export async function invInfo(payments: Payment[]): Promise<ErpInv[]>{
             info.amount = parseFloat(info.amount)
             info.krwamt = parseFloat(info.krwamt)
         })
-        return infos;
+        return mergeCmInv(infos);
     } catch (e) {
       console.error(e.stack);
     } 
@@ -319,4 +327,32 @@ export function getWriteOffAccount(info: Accounting): string {
         writeOff = 'AR Payment_Clearing'
     } 
     return writeOff
+}
+
+export function mergeCmInv(erpInvs: ErpInv[]): InvInfo[] {
+
+  var invInfos: InvInfo[] = [];
+  var invInfo: InvInfo;
+  var acctDates: string[] = [];
+
+  for (let inv of erpInvs) {
+    if (!acctDates.includes(inv.acctdate)) {
+      acctDates.push(inv.acctdate);
+    }
+  }
+
+  for (let acctDate of acctDates) {
+    invInfo = { acctdate: acctDate, customer: '', ccy: '', reference: '', amounts: [] };
+    for (let inv of erpInvs) {
+      if (inv.acctdate === acctDate) {
+        invInfo.customer = inv.customer;
+        invInfo.ccy = inv.ccy;
+        invInfo.reference = inv.reference;
+        invInfo.amounts.push(inv.amount);
+      }
+    }
+    invInfos.push(invInfo);
+  }
+  console.log(invInfos);
+  return invInfos;
 }

@@ -1,9 +1,10 @@
-import { test, expect, type Page } from '@playwright/test';
-import { Accounting, accountingInfo, Bankstmt, Payment, receiptInfo, receiptMethod, getWriteOffAccount } from '../src/util';
+import { test, expect, type Page, Locator } from '@playwright/test';
+import { Accounting, accountingInfo, Bankstmt, Payment, receiptInfo, receiptMethod, getWriteOffAccount, ErpInv, mergeCmInv } from '../src/util';
 import { add, format } from 'date-fns';
 import { addBusinessDays } from '../src/holiday';
 import { LoginPage } from './login-page';
 import { ReceiptPage } from './receipt-page';
+
 
 test.describe('ERP Receipt', () => {
 
@@ -23,15 +24,16 @@ test.describe('ERP Receipt', () => {
       const inputs = await receiptInfo(paymentId);  // inputs composed of different paid date
 
       var aInvs = inputs[0].erp_invs;
-      var aInvAmt = aInvs.reduce((acc, cur) => acc + cur.amount, 0);
+      var aInvAmt: number;
 
       for (let input of inputs) {
+        aInvAmt = aInvs.reduce((acc, cur) => acc + cur.amounts.reduce((acc1, cur) => acc1 + cur, 0), 0);
         
         const paidDate = input.payments[0].gateway === 'BSP' ? addBusinessDays('KR', '', input.payments[0].date, 1) : input.payments[0].date;
         console.log('\n====', input.payments[0].paymentid, 'paid on', format(paidDate, 'yyyy-MM-dd'), '==============================\n');
 
         const bankstmts = input.bankstmts;
-        const erp_invs = aInvs.filter((inv) => inv.amount !== 0);
+        const erp_invs = aInvs.filter((inv) => inv.amounts.reduce((acc, cur) => acc+cur, 0) !== 0);
         const accounting = input.accounting;
         const feeEtcs = accounting.filter((info) => info.account !== 'assets:checking');
         console.log('bankstmts:', bankstmts);
@@ -41,61 +43,39 @@ test.describe('ERP Receipt', () => {
         var aReceipt = accounting.reduce((acc, cur) => acc + cur.amount, 0);
         var aFeeEtc = feeEtcs.reduce((acc, cur) => acc + cur.amount, 0);
 
-        var sq = 1;
         var rp: ReceiptPage;
+        var paymentSearchFormExpanded = true;
         for (let bankstmt of bankstmts) {
-          console.log(`\n-------------- bankstmt-${sq} ---------------`);
+          console.log(`\n-------------- bankstmt ${bankstmt.trxdate} ${bankstmt.dramt.toLocaleString()} ---------------`);
           var aBankstmt = bankstmt.dramt;
-          console.log('aBankstmt:', aBankstmt, 'aReceipt:', aReceipt, `aErpInv${input.payments[0].gateway === 'JINAIR' ? '(ON+OFF)' : ''}:`, aInvAmt, '\n');
+          console.log('aBankstmt:', aBankstmt.toLocaleString(), 'aReceipt(accounting):', aReceipt.toLocaleString(), `aErpInv${input.payments[0].gateway === 'JINAIR' ? '(ON+OFF)' : ''}:`, aInvAmt.toLocaleString(), '\n');
 
-          // ---------------------------------------------------------
-          rp = new ReceiptPage(page, bankstmt, input.payments[0]);
+        
+          rp = new ReceiptPage(page, bankstmt, input.payments[0], paymentSearchFormExpanded);
           await rp.selectPayment();
           await rp.setCustomer(erp_invs[0].customer);
-          // ------------------------------------------------
+          
 
-          var i = 1;
+          var inv_sq = 0;
+          var invoiceSearchFormExpanded = true;
+          var searchButton: Locator;
+          var appliedInput: Locator;
           for (let inv of erp_invs) {
 
             if (aReceipt === 0 || aInvAmt <= 0 || aBankstmt === 0) {
               break;
             }
 
-            if (aFeeEtc > 0) {
-              for (let feeEtc of feeEtcs) {       
-                // ------------------------------------------------
-                await rp.writeOff(feeEtc)
-                // ------------------------------------------------
-                
-                console.log('receipt-0:', inv.reference, `(${feeEtc.account})`, feeEtc.amount);
-
-                // update state
-                aFeeEtc -= feeEtc.amount;
-                aInvAmt -= feeEtc.amount;
-                aReceipt -= feeEtc.amount;
-              }
-              console.log('aBankstmt:', aBankstmt, 'aReceipt:', aReceipt, 'aErpInv:', aInvAmt, '\n');
-              expect(aFeeEtc).toEqual(0);
-            }
-
-            var receiptAmt = 0;
-            if (inv.salerfnd === 'refund') {
-              receiptAmt = inv.amount;
-            } else if (inv.salerfnd === 'sale') {
-              receiptAmt = Math.min(inv.amount, aBankstmt, aReceipt);
-            }
-
-            // ------------------------------------------------
-            // rp.addOpenReceivables(inv, receiptAmt);
+            // rp.addOpenReceivables(inv, receiptAmt);  --> I don't know why this is not working
+          
             await page.getByRole('button', { name: 'Add Open Receivables', exact: true }).click();
             expect(page.getByRole('button', { name: 'Add', exact: true })).toBeVisible();
 
             // check search form is opened
-            const searchButton = page.getByRole('button', { name: 'Search', exact: true });
-            const searchFormOpened = await searchButton.isVisible();
-            if (!searchFormOpened) {
-                await page.getByTitle('Expand Search: Transactions').click();
-                await expect(searchButton).toBeVisible();
+            searchButton = page.getByRole('button', { name: 'Search', exact: true });
+            if (!invoiceSearchFormExpanded) {
+              await page.getByTitle('Expand Search: Transactions').click();
+              await expect(searchButton).toBeVisible();
             }
 
             await page.locator("xpath=//label[.='From Transaction Due Date']/following::input[@placeholder='yyyy-mm-dd'][1]").fill(inv.acctdate);
@@ -104,47 +84,81 @@ test.describe('ERP Receipt', () => {
             await searchButton.click();
             await expect(page.getByRole('button', { name: 'Done', exact: true })).toBeVisible();
 
-            // select invoice
-            await page.getByText(inv.amount.toLocaleString()).click();
-            await page.getByRole('button', { name: 'Add', exact: true }).click();
+            var receiptAmts: number[] = [];
+            var appliedAmts: number[] = [];
+
+            for (let i = 0 ; i < inv.amounts.length; i++) {
+            // inv.amounts.forEach(async (amt, i) => {
+              // select invoice
+              var receiptAmt = 0;
+              var appliedAmt = 0;
+              const invAmt = inv.amounts[i];
+              if (invAmt < 0) {  // CM case
+                appliedAmt = invAmt;
+                receiptAmt = invAmt;    
+                console.log(inv.reference, '(CM)', receiptAmt.toLocaleString() + ' (applied: ' + appliedAmt.toLocaleString() + ')');        
+              } else {        // Invoice Memo case
+                appliedAmt = Math.min(invAmt, aBankstmt, aReceipt);
+                receiptAmt = Math.min(invAmt, aBankstmt + aFeeEtc, aReceipt);
+                console.log(inv.reference, '(AR)', receiptAmt.toLocaleString() + ' (applied: ' + appliedAmt.toLocaleString() + ')');
+                inv_sq++;
+              }
+
+              await page.getByRole('cell', { name: `${invAmt.toLocaleString()} ${inv.ccy}`, exact: true }).click();
+              await page.getByRole('button', { name: 'Add', exact: true }).click();
+              
+              receiptAmts.push(receiptAmt);
+              appliedAmts.push(appliedAmt);
+
+              inv.amounts[i] -= receiptAmt;
+              aInvs = aInvs.map((el) => el.reference === inv.reference && el.acctdate === inv.acctdate ? inv : el);
+
+              aBankstmt -= appliedAmt;
+              aInvAmt -= receiptAmt;
+              aReceipt -= appliedAmt;
+              console.log('aBankstmt:', aBankstmt.toLocaleString(), 'aReceipt(accounting):', aReceipt.toLocaleString(), `aErpInv${input.payments[0].gateway === 'JINAIR' ? '(ON+OFF)' : ''}:`, aInvAmt.toLocaleString(), '\n');
+            }
             await page.getByRole('button', { name: 'Done', exact: true }).click();
-
-            // edit applied amount
-            // const appliedInput = await page.getByRole('cell', { name: `${inv.amount.toLocaleString()} Applied Amount` })
-            // await appliedInput.click();
-            // await page.keyboard.press('Shift+End')
-            // await page.keyboard.type(receiptAmt.toLocaleString());
-            // await page.keyboard.press('Tab');
-
-            await page.getByRole('cell', { name: `${inv.amount.toLocaleString()} Applied Amount` }).fill(receiptAmt.toLocaleString());
-            await page.keyboard.press('Tab');
-            // ------------------------------------------------
-            inv.amount -= receiptAmt;
-
-            console.log(`recepit-${i}:`, inv.reference, `${inv.salerfnd === 'sale' ? '(AR)' : '(CM)'}`, receiptAmt);
-
-            // update aInvs --> this is because available invoices should be lived during whole process
-            aInvs = aInvs.map((el) => el.reference === inv.reference && el.salerfnd === inv.salerfnd ? inv : el);
-            // adjust available state
-            aBankstmt -= receiptAmt;
-            aInvAmt -= receiptAmt;
-            aReceipt -= receiptAmt;
             
-            console.log('aBankstmt:', aBankstmt, 'aReceipt:', aReceipt, 'aErpInv:', aInvAmt, '\n');
-            i++;
+            for (let i = 0; i < receiptAmts.length; i++) {
+              console.log('edit applied:', 'appliedAmt:', appliedAmts[i].toLocaleString(), ' --> receiptAmt', receiptAmts[i].toLocaleString() );
+              
+              // edit applied amount
+              appliedInput = await page.getByRole('cell', { name: `${appliedAmts[i].toLocaleString()} Applied Amount`, exact: true })
+              await appliedInput.click();
+              await page.keyboard.press('Home')
+              await page.keyboard.press('Shift+End')
+              await page.keyboard.type(receiptAmts[i].toLocaleString());
+              await page.keyboard.press('Tab');
+            }
+
+            if (inv_sq === 1 && aFeeEtc > 0) {
+              for (let feeEtc of feeEtcs) {     
+
+                await rp.writeOff(feeEtc)
+                
+                console.log(inv.reference, `(${feeEtc.account})`, feeEtc.amount.toLocaleString());
+                aFeeEtc -= feeEtc.amount;
+                aReceipt -= feeEtc.amount;
+              }
+              console.log('aBankstmt:', aBankstmt.toLocaleString(), 'aReceipt(accounting):', aReceipt.toLocaleString(), `aErpInv${input.payments[0].gateway === 'JINAIR' ? '(ON+OFF)' : ''}:`, aInvAmt.toLocaleString(), '\n');
+              expect(aFeeEtc).toEqual(0);
+            }
+            invoiceSearchFormExpanded = false;
           }
 
-          sq++;
+          await page.getByRole('button', { name: 'Save and Close', exact: true }).click();
+          await expect(page.getByRole('button', { name: 'Done', exact: true })).toBeVisible();
+
+          paymentSearchFormExpanded = false
+          
           if (aReceipt === 0 || aInvAmt <= 0) {
             break;
           }
           if (aBankstmt === 0) {
             continue;
           }
-
           expect(aBankstmt).toBeGreaterThanOrEqual(0);
-          // ------------------------------------------------
-          rp.saveAndClose();
         }
         
         expect(aReceipt).toEqual(0);
@@ -193,21 +207,33 @@ test('data check', async () => {
   })
 });
 
+
+test('invoice test', async () => {
+  const paymentId = 'NK_SP_20240731';
+  const inputs = await receiptInfo(paymentId);
+  var invInfos = inputs[0].erp_invs;
+  console.log('invInfos:', invInfos);
+});
+
+
 test('dummy test', async () => {
   console.log('dummy test');
 
   // const paymentId = 'SW_LJ_OFF_20230825';
   // const paymentId = 'HD_BSP_20240903';
-  const paymentId = 'NK_SP_20240730';
-  const inputs = await receiptInfo(paymentId);
-  var aInvs = inputs[0].erp_invs;
-  var aInvAmt = aInvs.reduce((acc, cur) => acc + cur.amount, 0);
+  const paymentId = 'TP_SP_20240731';
+  const inputs = await receiptInfo(paymentId);  // 1 input per paid date
 
+  var aInvs = inputs[0].erp_invs;   // erp_invs are same for all inputs
+  var aInvAmt: number;
+  
   inputs.forEach((input, i) => {
+    aInvAmt = aInvs.reduce((acc, cur) => acc + cur.amounts.reduce((acc1, cur) => acc1 + cur, 0), 0);
+
     const paidDate = input.payments[0].gateway === 'BSP' ? addBusinessDays('KR', '', input.payments[0].date, 1) : input.payments[0].date;
     console.log('\n====', input.payments[0].paymentid, 'paid on', format(paidDate, 'yyyy-MM-dd'), '==============================\n');
     const bankstmts = input.bankstmts;
-    const erp_invs = aInvs.filter((inv) => inv.amount !== 0);
+    const erp_invs = aInvs.filter((inv) => inv.amounts.reduce((acc, cur) => acc+cur, 0) !== 0);
     const accounting = input.accounting;
     const feeEtcs = accounting.filter((info) => info.account !== 'assets:checking');
     // const invSum = erp_invs.reduce((acc, cur) => acc + cur.amount, 0);
@@ -219,64 +245,85 @@ test('dummy test', async () => {
     var aReceipt = accounting.reduce((acc, cur) => acc + cur.amount, 0);
     var aFeeEtc = feeEtcs.reduce((acc, cur) => acc + cur.amount, 0);
 
-    var sq = 1;
     for (let bankstmt of bankstmts) {
-      console.log(`\n-------------- bankstmt-${sq} ---------------`);
+      console.log(`\n-------------- bankstmt ${bankstmt.trxdate} ${bankstmt.dramt.toLocaleString()} ---------------`);
       var aBankstmt = bankstmt.dramt;
-      console.log('aBankstmt:', aBankstmt, 'aReceipt:', aReceipt, `aErpInv${input.payments[0].gateway === 'JINAIR' ? '(ON+OFF)' : ''}:`, aInvAmt, '\n');
 
-      var i = 1;
+      console.log('aBankstmt:', aBankstmt.toLocaleString(), 'aReceipt(accounting):', aReceipt.toLocaleString(), `aErpInv${input.payments[0].gateway === 'JINAIR' ? '(ON+OFF)' : ''}:`, aInvAmt.toLocaleString(), '\n');
+
+      var inv_sq = 0;
+      
       for (let inv of erp_invs) {
 
         if (aReceipt === 0 || aInvAmt <= 0 || aBankstmt === 0) {
           break;
         }
 
-        if (aFeeEtc > 0) {
-          // all fee & etc should be processed upfront
+        var receiptAmts: number[] = [];
+        var appliedAmts: number[] = [];
+
+        for (let i = 0; i < inv.amounts.length; i++) {
+        // inv.amounts.forEach((amt, i) => {
+        // for (let amt of inv.amounts) {
+          var receiptAmt = 0;
+          var appliedAmt = 0;
+          const invAmt = inv.amounts[i];
+          if (invAmt < 0) {
+            appliedAmt = invAmt;
+            receiptAmt = invAmt;
+            console.log(inv.reference, '(CM)', receiptAmt.toLocaleString() + ' (applied: ' + appliedAmt.toLocaleString() + ')');
+          } else {
+            appliedAmt = Math.min(invAmt, aBankstmt, aReceipt);
+            receiptAmt = Math.min(invAmt, aBankstmt + aFeeEtc, aReceipt);
+            console.log(inv.reference, '(AR)', receiptAmt.toLocaleString() + ' (applied: ' + appliedAmt.toLocaleString() + ')');
+            inv_sq++;
+          }
+          receiptAmts.push(receiptAmt);
+          appliedAmts.push(appliedAmt);
+
+          inv.amounts[i] -= receiptAmt;
+          aInvs = aInvs.map((el) => el.reference === inv.reference && el.acctdate === inv.acctdate ? inv : el);
+        
+          // adjust current state
+          aBankstmt -= appliedAmt;
+          aInvAmt -= receiptAmt;
+          aReceipt -= appliedAmt;
+
+          console.log('aBankstmt:', aBankstmt.toLocaleString(), 'aReceipt(accounting):', aReceipt.toLocaleString(), `aErpInv${input.payments[0].gateway === 'JINAIR' ? '(ON+OFF)' : ''}:`, aInvAmt.toLocaleString(), '\n');
+        }
+
+        for (let i = 0; i < receiptAmts.length; i++) {
+          console.log('edit applied:', 'appliedAmt:', appliedAmts[i].toLocaleString(), ' --> receiptAmt', receiptAmts[i].toLocaleString() );
+        }
+
+        if (inv_sq === 1 && aFeeEtc > 0) {
+          // all fee & etc will be accounted to the first invoice
           for (let feeEtc of feeEtcs) {       
-            console.log('receipt-0:', inv.reference, `(${feeEtc.account})`, feeEtc.amount);
+            console.log(inv.reference, `(${feeEtc.account})`, feeEtc.amount.toLocaleString());
 
             // update state
             aFeeEtc -= feeEtc.amount;
-            aInvAmt -= feeEtc.amount;
             aReceipt -= feeEtc.amount;
           }
-          console.log('aBankstmt:', aBankstmt, 'aReceipt:', aReceipt, 'aErpInv:', aInvAmt, '\n');
+          console.log('aBankstmt:', aBankstmt.toLocaleString(), 'aReceipt(accounting):', aReceipt.toLocaleString(), `aErpInv${input.payments[0].gateway === 'JINAIR' ? '(ON+OFF)' : ''}:`, aInvAmt.toLocaleString(), '\n');
           expect(aFeeEtc).toEqual(0);
         }
-
-        var receiptAmt = 0;
-        if (inv.salerfnd === 'refund') {
-          receiptAmt = inv.amount;
-        } else if (inv.salerfnd === 'sale') {
-          receiptAmt = Math.min(inv.amount, aBankstmt, aReceipt);
-        }
-        console.log(`recepit-${i}:`, inv.reference, `${inv.salerfnd === 'sale' ? '(AR)' : '(CM)'}`, receiptAmt);
-        inv.amount -= receiptAmt;
-        // update aInvs --> this is because available invoices should be lived during whole process
-        aInvs = aInvs.map((el) => el.reference === inv.reference && el.salerfnd === inv.salerfnd ? inv : el);
-        i++;
-        // adjust current state
-        aBankstmt -= receiptAmt;
-        aInvAmt -= receiptAmt;
-        aReceipt -= receiptAmt;
-
-        console.log('aBankstmt:', aBankstmt, 'aReceipt:', aReceipt, 'aErpInv:', aInvAmt, '\n');
       }
 
-      sq++;
-      if (aReceipt === 0 || aInvAmt <= 0) {
+      
+      if (aFeeEtc === 0 && (aReceipt === 0 || aInvAmt <= 0)) {
         break;
       }
       if (aBankstmt === 0) {
         continue;
       }
 
-      expect(aBankstmt).toBeGreaterThanOrEqual(0);
+      expect(aBankstmt + aFeeEtc).toBeGreaterThanOrEqual(0);
     }
     
     expect(aReceipt).toEqual(0);
     expect(aInvAmt).toBeGreaterThanOrEqual(0);  
   });
+
+  console.log('remaining aInvs:', aInvs);
 });
